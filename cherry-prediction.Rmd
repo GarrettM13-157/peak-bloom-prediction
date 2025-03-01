@@ -1,0 +1,233 @@
+---
+title: "Cherry Blossom Predictions"
+author: "Garrett Martin"
+date: "2025-02-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+Some parts of the following code were adapted or copied from the demo analysis. I will leave comments where that code was used and why it was used.
+
+I go into greater detail about my rationalle in my abstract, but I chose to analyze on the sum of maximum daily temperatures between Jan 1 and Feb 28 of each year (variable named sumtemp) and the number of days where the maximum temperature did not exceed freezing (32F, variable named colddays). These number were calculated using data made available online from NOAA, also included in the submission files. If you see sumtemp or colddays referenced in the code or the comments, that's where they're coming from.
+
+
+```{r}
+cherry <- read.csv("C:/Users/Garrett/Documents/cherry blossom files/peak-bloom-prediction/data/washingtondc.csv") %>% 
+   bind_rows(read.csv("C:/Users/Garrett/Documents/cherry blossom files/peak-bloom-prediction/data/liestal.csv")) %>%
+   bind_rows(read.csv("C:/Users/Garrett/Documents/cherry blossom files/peak-bloom-prediction/data/kyoto.csv")) %>%
+   bind_rows(read.csv("C:/Users/Garrett/Documents/cherry blossom files/peak-bloom-prediction/data/vancouver.csv")) %>%
+   bind_rows(read.csv("C:/Users/Garrett/Documents/cherry blossom files/peak-bloom-prediction/data/nyc.csv"))
+# This was adjusted from the demo analysis. File directories will likely need to be slightly tweaked to properly read in data.
+
+dctemp <- read.csv("C:/Users/Garrett/Documents/cherry blossom files/dc-temps.csv")
+liestaltemp <- read.csv("C:/Users/Garrett/Documents/cherry blossom files/liestal-temps.csv")
+kyototemp <- read.csv("C:/Users/Garrett/Documents/cherry blossom files/kyoto-temps.csv")
+temps <- dctemp %>% bind_rows(liestaltemp) %>% bind_rows(kyototemp)
+#I'm reading in data from files collected from NOAA and compiling them together. The data sets will be made available in the Github.
+
+temps <- temps %>% select(NAME, DATE, TMAX, TMIN) %>%
+ rename_at('NAME', ~'location') %>% rename_at('DATE', ~'date') %>%
+ mutate(TMAX = as.numeric(TMAX), TMIN = as.numeric(TMIN))
+
+temps$date <- as.Date(temps$date, format = '%m/%d/%Y')
+
+
+temps$location[temps$location == 'WASHINGTON REAGAN NATIONAL AIRPORT, VA US'] <- 'washingtondc'
+temps$location[temps$location == 'KYOTO, JA'] <- 'kyoto'
+temps$location[temps$location == 'BASEL BINNINGEN, SZ'] <- 'liestal'
+
+test <- temps %>% filter(month(date) %in% c(1,2)) %>%
+  filter(day(date)/month(date) != 14.5)
+#Small note on that 14.5 there. If it wasn't clear, that's what filters out leap days. The data would be messed up if i allowed leap days in a quarter of my observations, so I needed to remove them. Since days in the month never go past 31 at most and both day and month values are natural numbers, 2 and 29 are the only combination of month and day that divide to equal 14.5, hence the filter math.
+test <- test %>% rename_at('date', ~'year') %>% mutate(year = year(year))
+
+tempdata <- test %>% add_row(location = 'kyoto', year = 2005, TMAX = NA, TMIN = NA, .before=8540) %>%
+  group_by(location, year) %>%
+  summarise_at(vars(TMAX), list(sumtemp = sum))
+#Small note on the append here. The data set I pulled from (NOAA) does not have any data for 2005 for Kyoto. This code adds essentially an empty data point where 2005 would have been to let me combine it with the compiled bloom data from earlier.
+
+tempdata <- tempdata %>% arrange(desc(location))
+
+addvector <- tempdata$sumtemp
+
+cherry_fixed <- cherry %>% filter(location != 'newyorkcity', location != 'vancouver', year >= 1970)
+#I explain this a little in my abstract, but I wanted to remove NYC and Vancouver from initial analysis as they have so few data points, I wanted to dedicate individual sections to analyze them.
+
+testcherry <- cherry_fixed
+
+testcherry$sumtemp <- addvector
+
+test$cold <- rep(0, 9649)
+test$cold[test$TMAX <= 32] <- 1
+
+coldsum <- test %>% group_by(location, year) %>% summarise_at(vars(cold), list(colddays = sum))
+coldsum <- coldsum %>% arrange(desc(location))
+coldvector <- coldsum$colddays
+coldvector <- append(coldvector, 0)
+#As with the previous append, this makes it possible to combine with the cherry data frame and the sets derived from it
+
+testcherry$colddays <- coldvector
+
+testfit <- lm(bloom_doy ~ 0 + (location + year + sumtemp + colddays)^2, data = testcherry)
+#This model was adapted from the demo, but I added sumtemps and colddays. I'm limiting the interaction effects to only first order (or second order. I can't remember the names of the levels) interaction effects to keep the regression function simple.
+
+min(testcherry$sumtemp, na.rm = TRUE)
+max(testcherry$sumtemp, na.rm = TRUE)
+max(testcherry$colddays, na.rm=TRUE)
+#Here, I'm pulling the boundaries to set for the grid below. These could have theoretically been plugged into the line of code below to condense it without impacting functionality. This is where I'm getting the 2021 and 320 for sumtemp and 25 for colddays.
+
+cherry_fixed_grid <- expand_grid(location = unique(testcherry$location), year = 1970:2025, sumtemp = 2021:3200, colddays = 0:25)
+predictions <- cherry_fixed_grid %>%
+    bind_cols(predict(testfit, newdata = cherry_fixed_grid, interval = 'prediction', level = 0.9, na.action = na.pass)) %>%
+    rename(prediction = fit, lower = lwr, upper = upr)
+#The above code was taken from the demo. I discuss why I chose to have a similar model in my abstract, but this makes it easy to check how well the model fits.
+
+
+#As of submitting this assignment, the data on NOAA that I pulled was compiled only up to Feb. 24th. To obtain the sumtemp and coldday values, I went on their website and manually calculated them, supplementing relevant forecast data from reputable weather stations where necessary. I do this later with Vancouver and NYC.
+wash25sum <- 2651
+wash25cold <- 6
+kyoto25sum <- 2900
+kyoto25cold <- 0
+liest25sum <- 2639
+liest25cold <- 1
+
+predictions %>% filter(location == 'washingtondc', year == 2025, sumtemp == wash25sum, colddays == wash25cold)
+predictions %>% filter(location == 'liestal', year == 2025, sumtemp == liest25sum, colddays == liest25cold)
+predictions %>% filter(location == 'kyoto', year == 2025, sumtemp == kyoto25sum, colddays == kyoto25cold)
+
+location <- c('washingtondc','liestal','kyoto','vancouver','nyc')
+prediction <- c(88, 88, 95, 0, 0)
+lower_vec <- c(77, 76, 82, 0, 0)
+upper_vec <- c(100, 99, 108, 0, 0)
+bloom_predictions <- data.frame(Location = location, Prediction = prediction, Lower = lower_vec, Upper = upper_vec)
+#The above code is calculating predictions and prediction intervals for DC, Liestal, and Kyoto and compiling them in a data frame. We'll come back to this data frame later once we deal with Vancouver and NYC, whose variables have been left as zeroes.
+
+
+vantemp <- read.csv('C:/Users/Garrett/Documents/cherry blossom files/vancouver-temp.csv')
+vtemps <- dctemp %>% bind_rows(liestaltemp) %>% bind_rows(kyototemp) %>% bind_rows(vantemp)
+vtemps_mod <- vtemps%>% select(NAME, DATE, TMAX, TMIN) %>%
+   rename_at('NAME', ~'location') %>% rename_at('DATE', ~'date') %>%
+   mutate(TMAX = as.numeric(TMAX), TMIN = as.numeric(TMIN))
+vtemps_mod$location[vtemps_mod$location == 'WASHINGTON REAGAN NATIONAL AIRPORT, VA US'] <- 'washingtondc'
+vtemps_mod$location[vtemps_mod$location == 'BASEL BINNINGEN, SZ'] <- 'liestal'
+vtemps_mod$location[vtemps_mod$location == 'KYOTO, JA'] <- 'kyoto'
+vtemps_mod$location[vtemps_mod$location == 'VANCOUVER INTERNATIONAL A, BC CA'] <- 'vancouver'
+vtemps_mod$date <- as.Date(vtemps_mod$date, format = '%m/%d/%Y')
+vtemps_mod <- vtemps_mod %>% filter(month(date) %in% c(1, 2)) %>% filter(day(date)/month(date) != 14.5)
+vtemps_mod <- vtemps_mod %>% rename_at('date', ~'year') %>%
+   mutate(year = year(year))
+vtemps_mod$cold = rep(0, 9826)
+vtemps_mod$cold[vtemps_mod$TMAX <= 32] <- 1
+vtemps_mod[nrow(vtemps_mod)+1,] = c('kyoto', 2005, NA, NA, 0)
+vtemps_mod$cold <- as.numeric(vtemps_mod$cold)
+vtemps_mod$TMAX <- as.numeric(vtemps_mod$TMAX)
+vcount <- vtemps_mod %>% group_by(location, year) %>%
+    summarise(across(c(TMAX, cold), sum))
+vcount <- vcount %>% arrange(desc(location))
+vfixedcherry <- cherry %>% filter(location != 'newyorkcity', year >= 1970) %>%
+   arrange(desc(location))
+vfixedcherry$vsumtemp <- vcount$TMAX
+vfixedcherry$vcolddays <- vcount$cold
+#All this block above me is importing, compiling, and sorting the data I'm going to use to predict for Vancouver. It likely could've been condensed into fewer, more complex lines of code, but by keeping it piecewise in a sense I was able to better make sure the data was being wrangled in a way that made sense to me. I've omitted the several view() functions I used to track the data. All the Vs preceding the object names are flags to me that this is for my Vancouver analysis.
+
+vmodel <- lm(bloom_doy ~ (year + vsumtemp + vcolddays)^2, data = vfixedcherry,
+            weights = (location == 'vancouver') + 0.2 * (location != 'vancouver'))
+#This model was adapted from the demo, but I added sumtemps and colddays and allowed for first order interactions. I kept the weighting the same as the demo.
+
+van25sum <- 2582
+van25cold <- 3
+#Like before, this data was incomplete and manually calculated.
+v_grid <- expand_grid(location = 'vancouver',
+                    year = 2022:2025,
+                   vsumtemp = van25sum:2671,
+                   vcolddays = 0:4)
+vpredictions <- v_grid %>%
+   bind_cols(predict(vmodel, newdata = v_grid, interval = 'prediction', level = 0.9)) %>%
+   rename(prediction = fit, lower = lwr, upper = upr)
+
+vfinal <- vpredictions %>%
+   filter(vsumtemp == van25sum) %>%
+   filter(vcolddays == van25cold) %>%
+   filter(year == 2025)
+vfinal
+
+bloom_predictions$Prediction[bloom_predictions$Location == 'vancouver'] <- 90
+bloom_predictions$Lower[bloom_predictions$Location == 'vancouver'] <- 84
+bloom_predictions$Upper[bloom_predictions$Location == 'vancouver'] <- 95
+#These numbers were obtained from the final prediction and were added to the predictions data frame.
+
+
+#All the below code was adapted from the demo files to add additional observations for NYC.
+nyc_npn <- read.csv('C:/Users/Garrett/Documents/cherry blossom files/peak-bloom-prediction/data/USA-NPN_status_intensity_observations_data.csv', header = TRUE) %>%
+   filter(Site_ID == 32789, Species_ID == 228) %>%
+    mutate(Observation_Date = as.Date(Observation_Date, format = '%m/%d/%Y'))
+
+nyc_data <- nyc_npn %>%
+   arrange(Observation_Date) %>%
+   mutate(year = year(Observation_Date)) %>%
+   group_by(year) %>%
+   summarize(first_flower_index = min(which(Phenophase_Status == 1)),
+             bloom_date = strftime(Observation_Date[first_flower_index], format = '%Y-%m-%d'),
+             bloom_doy = Day_of_Year[first_flower_index],
+             .groups = 'drop') %>%
+   filter(!is.na(bloom_doy)) %>%
+   select(-first_flower_index) %>%
+   mutate(location = 'newyorkcity')
+nyccherry <- cherry %>% bind_rows(nyc_data) %>%
+  arrange(desc(location)) %>%
+  filter(year >= 1970) %>%
+  filter(location != 'vancouver')
+
+#The below code reads in NYC data from NOAA, reformats and recompiles it, and cleans it up and combines it with the data obtained earlier
+nyctemps <- read.csv('C:/Users/Garrett/Documents/cherry blossom files/nyc-temps.csv')
+nyctemps <- nyctemps %>% select(NAME, DATE, TMAX, TMIN) %>%
+   rename_at('NAME', ~'location') %>% rename_at('DATE', ~'date') %>%
+   mutate(date = as.Date(date, format = '%m/%d/%Y'), TMAX = as.numeric(TMAX)) %>% bind_rows(temps)
+nyctemps$location[nyctemps$location == 'LAGUARDIA AIRPORT, NY US'] <- 'newyorkcity'
+nyctemps <- nyctemps %>%
+   filter(month(date) %in% c(1,2)) %>% filter(day(date)/month(date) != 14.5)
+nyctemps <- nyctemps %>% rename_at('date',~'year') %>%
+   mutate(year = year(year))
+nyctemps$cold <- rep(0, 10003)
+nyctemps <- rbind(nyctemps, c('kyoto', 2005, NA, NA, 0))
+nyctemps$cold[nyctemps$TMAX <= 32] <- 1
+nyctemps$TMAX <- as.numeric(nyctemps$TMAX)
+nyctemps$cold <- as.numeric(nyctemps$cold)
+nyccount <- nyctemps %>% group_by(location, year) %>%
+   summarise(across(c(TMAX, cold), sum))
+nyccount <- nyccount %>% arrange(desc(location))
+nyccherry$nsumtemp <- nyccount$TMAX
+nyccherry$ncolddays <- nyccount$cold
+
+nmodel <- lm(bloom_doy ~ (year + nsumtemp + ncolddays)^2, data = nyccherry,
+            weights = (location == 'newyorkcity') + 0.2 * (location != 'newyorkcity'))
+#I used a similar formula to the one used to analyze Vancouver data. I felt that given how comparatively few entries for NYC there were, a similar function would work well.
+
+nyc25sum <- 2339
+nyc25cold <- 11
+#As before, 2025 data is incomplete through NOAA. These were calculated by hand.
+ngrid <- expand_grid(location = 'newyorkcity',
+                    year = c(2019, 2021:2025),
+                    nsumtemp = nyc25sum:2846,
+                    ncolddays = 0:14)
+npredictions <- ngrid %>%
+    bind_cols(predict(nmodel, newdata = ngrid, interval = 'prediction', level = 0.9)) %>%
+    rename(prediction = fit, lower = lwr, upper = upr)
+
+nfinal <- npredictions %>%
+   filter(nsumtemp == nyc25sum) %>%
+   filter(ncolddays == nyc25cold) %>%
+   filter(year == 2025)
+nfinal
+
+bloom_predictions$Prediction[bloom_predictions$Location == 'nyc'] <- 93
+bloom_predictions$Lower[bloom_predictions$Location == 'nyc'] <- 87
+bloom_predictions$Upper[bloom_predictions$Location == 'nyc'] <- 99
+
+bloom_predictions
+#Above is the fully completed predictions data frame.
+```
